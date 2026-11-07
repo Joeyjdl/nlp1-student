@@ -160,20 +160,32 @@ def predict_labels(model_path, x_sparse, device="cpu"):
 
 def single_and_ensemble_predictions(system_runs: list, x_sparse, device="cpu", seed=0):
     """
-    Return the predictions of a single model (first seed, first fold, as in the tutorial) and of the majority vote 
-    ensemble of all models (all seeds and folds) of a system.
+    Predict with every model of a system, and build one majority-vote ensemble per seed (over that seed's folds).
+    Seeds are not mixed into one big ensemble; they only give repeated measurements for variance.
 
     system_runs: output of run_system
     x_sparse: SciPy CSR matrix with one encoded input per row
     device: where to run the models
     seed: for breaking ties in the majority vote
+
+    Returns a dict with:
+        - singles: one prediction array per model (seed-major, fold order)
+        - ensembles: one prediction array per seed (majority vote over that seed's folds)
+        - single: first seed, first fold (for classification reports)
+        - ensemble: first seed's ensemble (for classification reports)
     """
-    all_predictions = []
+    singles = []
+    ensembles = []
     for run_data in system_runs:
+        fold_predictions = []
         for fold, model_path in run_data['models'].items():
-            all_predictions.append(predict_labels(model_path, x_sparse, device))
-    all_predictions = np.array(all_predictions)  # [num_models, num_inputs]
+            preds = predict_labels(model_path, x_sparse, device)
+            fold_predictions.append(preds)
+            singles.append(preds)
+        ensembles.append(clslib.majority_vote(np.array(fold_predictions), seed=seed))
     return {
-        'single': all_predictions[0],
-        'ensemble': clslib.majority_vote(all_predictions, seed=seed),
+        'singles': singles,
+        'ensembles': ensembles,
+        'single': singles[0],
+        'ensemble': ensembles[0],
     }

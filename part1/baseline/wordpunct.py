@@ -1,6 +1,6 @@
 """
-The separate wordpunct run: token indicators over a word vocabulary built with NLTK's wordpunct_tokenize.
-The vocabulary is large, so the encoder returns sparse (CSR) rows instead of dense vectors.
+The separate wordpunct run: token indicator and bag-of-words encoders over a word vocabulary built with 
+NLTK's wordpunct_tokenize. The vocabulary is large, so the encoders return sparse (CSR) rows instead of dense vectors.
 """
 import json
 import numpy as np
@@ -60,64 +60,100 @@ def load_or_build_vocab(corpus, cleanup: str, steps: list, min_frequency: int, r
         return json.load(f)
 
 
-class WordPunctPairIndicator(clslib.Encoder):
+class WordEncoder(clslib.Encoder):
     """
-    Represents a sentence pair x = (s1, s2) as a sparse vector of word indicators, using the same pair modes 
-    as clslib.PairEncoder (with V the vocabulary size):
-        - stack_diff_prod: words of s1 in [0, V), words of s2 in [V, 2V), words in only one sentence in [2V, 3V), 
-            words in both sentences in [3V, 4V)
-        - overlap: words in both sentences in [0, V), words in only one sentence in [V, 2V)
-        - stack: words of s1 in [0, V), words of s2 in [V, 2V)
-        - concat_text: words of s1 + " " + s2 in [0, V)
-    Words that are not in the vocabulary are ignored.
+    Base class for single-sentence encoders over a word vocabulary (see build_vocab). Represents a text as a 
+    sparse 1 x V row; subclasses decide what the non-zero values are. Words not in the vocabulary are ignored.
     """
 
-    def __init__(self, vocab: dict, normalizer, mode: str):
+    def __init__(self, vocab: dict, normalizer):
         """
         vocab: dict mapping a word to a 0-based id (see build_vocab)
         normalizer: cleanup applied before tokenization (the same one used to build the vocabulary)
+        """
+        self.vocab = vocab
+        self.normalizer = normalizer
+
+    def __len__(self) -> int:
+        """Dimensionality of the representation space"""
+        return len(self.vocab)
+
+    def word_ids(self, text: str) -> list:
+        """The vocabulary ids of the words in text, in order and with repetition"""
+        return [self.vocab[w] for w in wordpunct_tokenize(self.normalizer.normalize_str(text)) if w in self.vocab]
+
+    def row(self, ids: list, values: list) -> 'csr_matrix':
+        """A sparse 1 x V row with the given values at the given vocabulary ids"""
+        return csr_matrix((values, (np.zeros(len(ids), dtype=int), ids)), shape=(1, len(self)))
+
+
+class WordIndicator(WordEncoder):
+    """Represents a text as a sparse 1 x V row with a 1 for each vocabulary word present in the text."""
+
+    def __call__(self, text: str) -> 'csr_matrix':
+        """Represent text as a sparse 1 x V row of word indicators"""
+        ids = sorted(set(self.word_ids(text)))
+        return self.row(ids, np.ones(len(ids)))
+
+
+class WordBagOfWords(WordEncoder):
+    """Represents a text as a sparse 1 x V row with the count of each vocabulary word in the text."""
+
+    def __call__(self, text: str) -> 'csr_matrix':
+        """Represent text as a sparse 1 x V row of word counts"""
+        counts = Counter(self.word_ids(text))
+        ids = sorted(counts)
+        return self.row(ids, np.array([counts[i] for i in ids], dtype=float))
+
+
+class WordPunctPairEncoder(clslib.Encoder):
+    """
+    Represents a sentence pair x = (s1, s2) as one sparse row, using a base word encoder h for single sentences 
+    and the same pair modes as clslib.PairEncoder (with V the vocabulary size):
+        - stack_diff_prod: [h(s1), h(s2), |h(s1) - h(s2)|, h(s1) * h(s2)]
+        - overlap: [min(h(s1), h(s2)), |h(s1) - h(s2)|]
+        - stack: [h(s1), h(s2)]
+        - concat_text: h(s1 + " " + s2)
+    """
+
+    def __init__(self, encoder: WordEncoder, mode: str):
+        """
+        encoder: a WordEncoder for single texts (such as WordIndicator or WordBagOfWords)
         mode: one of clslib.PAIR_MODES
         """
         if mode not in clslib.PAIR_MODES:
             raise ValueError(f"Unknown pair mode={mode}, choose from {clslib.PAIR_MODES}")
-        self.vocab = vocab
-        self.normalizer = normalizer
+        self.encoder = encoder
         self.mode = mode
 
     def __len__(self) -> int:
         """Dimensionality of the representation space"""
         if self.mode == 'concat_text':
-            return len(self.vocab)
+            return len(self.encoder)
         if self.mode == 'stack_diff_prod':
-            return 4 * len(self.vocab)
-        return 2 * len(self.vocab)
-
-    def word_ids(self, text: str) -> set:
-        """The set of vocabulary ids of the words in text"""
-        return {self.vocab[w] for w in wordpunct_tokenize(self.normalizer.normalize_str(text)) if w in self.vocab}
+            return 4 * len(self.encoder)
+        return 2 * len(self.encoder)
 
     def __call__(self, x: tuple) -> 'csr_matrix':
-        """Represent the pair x = (s1, s2) as a sparse 1 x D row of indicators"""
+        """Represent the pair x = (s1, s2) as a sparse 1 x D row"""
         s1, s2 = x
-        V = len(self.vocab)
         if self.mode == 'concat_text':
-            ids = self.word_ids(s1 + " " + s2)
+            return self.encoder(s1 + " " + s2)
+        h1 = self.encoder(s1)
+        h2 = self.encoder(s2)
+        if self.mode == 'stack_diff_prod':
+            blocks = [h1, h2, abs(h1 - h2), h1.multiply(h2)]
+        elif self.mode == 'stack':
+            blocks = [h1, h2]
         else:
-            ids1, ids2 = self.word_ids(s1), self.word_ids(s2)
-            if self.mode == 'stack_diff_prod':
-                ids = ids1 | {V + i for i in ids2} | {2 * V + i for i in ids1 ^ ids2} | {3 * V + i for i in ids1 & ids2}
-            elif self.mode == 'stack':
-                ids = ids1 | {V + i for i in ids2}
-            else:
-                ids = (ids1 & ids2) | {V + i for i in ids1 ^ ids2}
-        ids = sorted(ids)
-        return csr_matrix((np.ones(len(ids)), (np.zeros(len(ids), dtype=int), ids)), shape=(1, len(self)))
+            blocks = [h1.minimum(h2), abs(h1 - h2)]
+        return scipy.sparse.hstack(blocks).tocsr()
 
 
 def vectorize(texts, encoder):
     """Encode inputs with an encoder that returns sparse rows and stack them into a SciPy CSR matrix.
 
     texts: list of inputs for the encoder
-    encoder: an instance of WordPunctPairIndicator
+    encoder: an instance of WordPunctPairEncoder
     """
     return scipy.sparse.vstack([encoder(x) for x in texts]).tocsr()

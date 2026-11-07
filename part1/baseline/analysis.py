@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import StrMethodFormatter
 import baycomp
 import scipy.stats as st
+from sklearn.metrics import accuracy_score, f1_score, recall_score
 
 def make_data_frame(classifiers_data):
     """
@@ -243,3 +244,58 @@ def plot_comparisons(data, comparisons: list, rope_size: float):
         print(f"A={sys_a} B={sys_b}: P(A wins)={p_a:.4f} P(Tie)={p_tie:.4f} P(B wins)={p_b:.4f} Effect Size={posterior.effect_size:.2f}")
         _ = posterior.plot(rope_size)
         plt.show()
+
+
+def test_metrics_mean_std(y_true, predictions_list, labels=None):
+    """
+    Mean and sample std (ddof=1) of accuracy, macro F1 and per-class recall over prediction sets.
+
+    y_true: true labels
+    predictions_list: list of predicted-label arrays (one per run / ensemble)
+    labels: class label indices in a fixed order (default: sorted unique labels in y_true)
+
+    Returns a dict mapping metric name to (mean, std). Per-class recall keys are recall_{label}.
+    """
+    if labels is None:
+        labels = sorted(set(y_true))
+    rows = []
+    for preds in predictions_list:
+        row = {
+            'accuracy': accuracy_score(y_true, preds),
+            'macro_f1': f1_score(y_true, preds, average='macro', labels=labels, zero_division=0),
+        }
+        recalls = recall_score(y_true, preds, average=None, labels=labels, zero_division=0)
+        for label, recall in zip(labels, recalls):
+            row[f'recall_{label}'] = recall
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    return {col: (df[col].mean(), df[col].std(ddof=1)) for col in df.columns}
+
+
+def format_mean_std(mean, std, digits=4):
+    """Format a mean ± sample-std pair for display in a table."""
+    return f"{mean:.{digits}f} ± {std:.{digits}f}"
+
+
+def test_overview_table(y_true, test_predictions, class_names, digits=4):
+    """
+    Build a DataFrame with mean ± std test metrics for every system and role (single / ensemble).
+
+    y_true: true test labels
+    test_predictions: dict from system name to the output of experiment.single_and_ensemble_predictions
+    class_names: list of class names indexed by label (used for recall column titles)
+    digits: decimals in the mean ± std strings
+    """
+    labels = list(range(len(class_names)))
+    metric_columns = ['accuracy', 'macro_f1'] + [f'recall_{name}' for name in class_names]
+    table = []
+    for name, preds in test_predictions.items():
+        for role, key in [('single', 'singles'), ('ensemble', 'ensembles')]:
+            stats = test_metrics_mean_std(y_true, preds[key], labels=labels)
+            row = {'model': name, 'role': role}
+            row['accuracy'] = format_mean_std(*stats['accuracy'], digits=digits)
+            row['macro_f1'] = format_mean_std(*stats['macro_f1'], digits=digits)
+            for label, class_name in enumerate(class_names):
+                row[f'recall_{class_name}'] = format_mean_std(*stats[f'recall_{label}'], digits=digits)
+            table.append(row)
+    return pd.DataFrame(table, columns=['model', 'role'] + metric_columns)
