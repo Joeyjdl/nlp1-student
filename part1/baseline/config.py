@@ -75,8 +75,7 @@ WORDPUNCT_MODELS = ['linear']  # add 'mlp' to also run the MLP
 ROPE_SIZE = 0.005
 # pairs (A, B) of system names to plot posteriors for (names as printed by the experiment section)
 ROPE_COMPARISONS = [
-    ("linear_indicator-enc_overlap_bpe-raw-vs1000-mf2", "linear_indicator-enc_overlap_bpe-nfkd_strip_lower-vs1000-mf2"),
-    ("linear_indicator-enc_overlap_bpe-raw-vs1000-mf2", "linear_bow-enc_overlap_bpe-raw-vs1000-mf2"),
-    ("linear_indicator-enc_overlap_bpe-raw-vs1000-mf2", "mlp_indicator-enc_overlap_bpe-raw-vs1000-mf2"),
-    ("linear_indicator-enc_overlap_bpe-raw-vs1000-mf2", "linear_indicator-enc_overlap_wordpunct-raw-mf5"),
+    ("linear_indicator-enc_stack_diff_prod_bpe-raw-vs1000-mf2", "linear_bow-enc_stack_diff_prod_bpe-raw-vs1000-mf2"),
+    ("linear_indicator-enc_stack_diff_prod_bpe-raw-vs1000-mf2", "mlp_indicator-enc_stack_diff_prod_bpe-raw-vs1000-mf2"),
+    ("linear_indicator-enc_stack_diff_prod_bpe-raw-vs1000-mf2", "linear_indicator-enc_stack_diff_prod_wordpunct-raw-mf5"),
 ]
