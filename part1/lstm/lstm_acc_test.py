@@ -128,7 +128,7 @@ def main():
 	)
 
 	model = DualLSTMClassifier()
-	ckpt = torch.load("model_ft_labeled.pth", map_location="cpu", weights_only=True)
+	ckpt = torch.load("wts/model_ft_labeled.pth", map_location="cpu", weights_only=True)
 	model.load_state_dict(ckpt["wts"])
 
 	total_correct = 0
