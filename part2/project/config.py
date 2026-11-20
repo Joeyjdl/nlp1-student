@@ -114,12 +114,21 @@ OPT_KWARGS = {
 }
 
 # Analysis
-OVERLAP_HIGH_QUANTILE = 0.9  # high-overlap bin = overlap >= this quantile on analysis set
+OVERLAP_HIGH_QUANTILE = 0.75  # high-overlap bin = overlap >= this quantile on analysis set
 NUM_LENGTH_BINS = 5
 NUM_OVERLAP_BINS = 5
 BDA_NUM_WARMUP = 1000
 BDA_NUM_SAMPLES = 1000
 BDA_NUM_CHAINS = 4
+ROPE_SIZE = 0.005
+ROPE_COMPARISONS = [
+    ("bilstm_ft300", "lstm_ft300"),
+    ("gru_ft300", "lstm_ft300"),
+    ("lstm_ft300", "lstm_glove300"),
+    ("pool_ft300", "lstm_ft300"),
+    ("lstm_glove50", "lstm_glove300"),
+    ("lstm_ft300", "lstm_ft_subword"),
+]
 
 # Which training runs to execute. Flip enabled to include extras later.
 RUNS = [

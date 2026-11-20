@@ -181,12 +181,12 @@ def train(
     """
     time_start = time.time()
 
-    print("Tokenizing pairs...")
+    tqdm.write("Tokenizing pairs...")
     train_x1, train_x2, train_y = _tokenize_pairs(training_set, tokenizer)
     val_x1, val_x2, val_y = _tokenize_pairs(validation_set, tokenizer)
 
     time_tokenizing = time.time()
-    print(f"Tokenization done! Time taken: {time_tokenizing - time_start:.3f} seconds")
+    tqdm.write(f"Tokenization done! Time taken: {time_tokenizing - time_start:.3f} seconds")
 
     pad_id = emb_model.vocab.index(emb_model.pad_token)
 
@@ -204,7 +204,7 @@ def train(
     )
 
     time_dataloader = time.time()
-    print(f"Dataloader done! Time taken: {time_dataloader - time_tokenizing:.3f} seconds")
+    tqdm.write(f"Dataloader done! Time taken: {time_dataloader - time_tokenizing:.3f} seconds")
 
     if isinstance(device, str):
         device = torch.device(device)
@@ -234,12 +234,12 @@ def train(
     best_val_loss = None
     best_epoch = 0
 
-    for epoch in tqdm(range(opt_kwargs["num_epochs"]), desc="epochs"):
+    for epoch in tqdm(range(opt_kwargs["num_epochs"]), desc="epochs", leave=False):
         train_metrics = training_one_epoch(model, train_loader, optimizer, criterion, device)
         val_metrics = evaluate(model, val_loader, criterion, num_classes, device)
         metrics.append({"train_metrics": train_metrics, "val_metrics": val_metrics})
 
-        print(
+        tqdm.write(
             f"Epoch {epoch + 1:02d} | "
             f"train loss: {train_metrics['loss']:.4f} | "
             f"train acc: {train_metrics['accuracy']:.4f} | "
@@ -254,8 +254,8 @@ def train(
             best_epoch = epoch
 
     time_training = time.time()
-    print(f"Training done! Time taken: {time_training - time_dataloader:.3f} seconds")
-    print(f"Best epoch {best_epoch + 1} (val loss {best_val_loss:.4f})")
+    tqdm.write(f"Training done! Time taken: {time_training - time_dataloader:.3f} seconds")
+    tqdm.write(f"Best epoch {best_epoch + 1} (val loss {best_val_loss:.4f})")
     return metrics, best_epoch
 
 
@@ -425,17 +425,26 @@ def load_paws_cv_and_devtest():
             part1_experiment.cross_validation_split(cv_pairs, k=config.NUM_FOLDS, seed=seed)
         )
         devtest_splits.append(
-            part1_experiment.split_test_devtest(
-                test_pairs, config.DEVTEST_SIZE, seed=seed
-            )
+            part1_experiment.split_test_devtest(test_pairs, config.DEVTEST_SIZE, seed=seed)
         )
     return outcome_space, cv_splits, devtest_splits
 
 
-def run_one(run, outcome_space, cv_splits, device=None):
-    """Run 3-seed x 5-fold CV for one RUNS entry. Returns summary dict."""
+def _read_json(path: Path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def run_one(run, outcome_space, cv_splits, device=None, force=False):
+    """Run 3-seed x 5-fold CV for one RUNS entry, reusing saved results unless force. Returns summary dict."""
     if device is None:
         device = config.DEVICE
+
+    save_root = config.RESULTS_DIR / run["id"]
+    summary_path = save_root / "summary.json"
+    if summary_path.is_file() and not force:
+        print(f"=== Run {run['id']}: already trained, skipping (use --force to retrain) ===")
+        return _read_json(summary_path)
 
     enc_name = run["enc"]
     emb_key = run["emb"]
@@ -448,12 +457,19 @@ def run_one(run, outcome_space, cv_splits, device=None):
 
     enc_kwargs = dict(config.ENCODERS[enc_name]["enc_kwargs"])
     print(f"=== Run {run['id']}: enc={enc_name} emb={emb_key} ===")
-    emb_model, tokenizer = embeddings.load_embedding_and_tokenizer(emb_key)
+    emb_model, tokenizer = None, None
 
     seed_metrics = []
-    save_root = config.RESULTS_DIR / run["id"]
     for seed_idx, seed in enumerate(config.SEEDS):
         save_to = str(save_root / f"seed-{seed}")
+        seed_metrics_path = Path(save_to) / "seed_metrics.json"
+        if seed_metrics_path.is_file() and not force:
+            print(f"[{run['id']}] seed {seed}: already trained, loading saved metrics")
+            seed_metrics.append(_read_json(seed_metrics_path))
+            continue
+
+        if emb_model is None:
+            emb_model, tokenizer = embeddings.load_embedding_and_tokenizer(emb_key)
         result = cross_validation(
             outcome_space=outcome_space,
             data_splits=cv_splits[seed_idx],
@@ -467,14 +483,14 @@ def run_one(run, outcome_space, cv_splits, device=None):
             save_to=save_to,
         )
         seed_metrics.append(result["metrics"])
-        with open(Path(save_to) / "seed_metrics.json", "w", encoding="utf-8") as f:
+        with open(seed_metrics_path, "w", encoding="utf-8") as f:
             json.dump(result["metrics"], f, indent=2)
 
     summary = summarize_metrics(seed_metrics)
     summary["run_id"] = run["id"]
     summary["enc"] = enc_name
     summary["emb"] = emb_key
-    with open(save_root / "summary.json", "w", encoding="utf-8") as f:
+    with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(
         f"[{run['id']}] acc {summary['accuracy_mean']:.4f}±{summary['accuracy_std']:.4f} | "
@@ -483,8 +499,17 @@ def run_one(run, outcome_space, cv_splits, device=None):
     return summary
 
 
-def run_enabled(run_ids=None, device=None):
+def run_enabled(run_ids=None, device=None, force=False):
     """Run all enabled RUNS, or only those whose id is in run_ids."""
+    if run_ids is None:
+        runs = config.enabled_runs()
+    else:
+        known_ids = {run["id"] for run in config.RUNS}
+        unknown = [run_id for run_id in run_ids if run_id not in known_ids]
+        if unknown:
+            raise KeyError(f"Unknown run ids: {unknown}")
+        runs = [config.run_by_id(run_id) for run_id in dict.fromkeys(run_ids)]
+
     outcome_space, cv_splits, devtest_splits = load_paws_cv_and_devtest()
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -501,17 +526,9 @@ def run_enabled(run_ids=None, device=None):
     with open(config.RESULTS_DIR / "devtest_splits.json", "w", encoding="utf-8") as f:
         json.dump(devtest_meta, f, indent=2)
 
-    runs = config.enabled_runs()
-    if run_ids is not None:
-        wanted = set(run_ids)
-        runs = [r for r in runs if r["id"] in wanted]
-        missing = wanted - {r["id"] for r in runs}
-        if missing:
-            raise KeyError(f"Requested run ids not enabled or unknown: {sorted(missing)}")
-
     summaries = []
     for run in runs:
-        summaries.append(run_one(run, outcome_space, cv_splits, device=device))
+        summaries.append(run_one(run, outcome_space, cv_splits, device=device, force=force))
     return summaries, devtest_splits
 
 
@@ -522,16 +539,21 @@ def main(argv=None):
         action="append",
         dest="run_ids",
         default=None,
-        help="Run only this enabled run id (repeatable). Default: all enabled.",
+        help="Run only this run id (repeatable). Default: all enabled.",
     )
     parser.add_argument(
         "--device",
         default=None,
         help="torch device string (default: config.DEVICE)",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Retrain runs that already have saved results.",
+    )
     args = parser.parse_args(argv)
     device = torch.device(args.device) if args.device else config.DEVICE
-    run_enabled(run_ids=args.run_ids, device=device)
+    run_enabled(run_ids=args.run_ids, device=device, force=args.force)
 
 
 if __name__ == "__main__":
